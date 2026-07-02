@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Supereasy - 자연스러운 얼굴 사진 보정</title>
+    <meta
+      name="description"
+      content="얼굴의 특징은 유지하면서 자연스럽고 완성도 높은 결과를 만드는 AI 사진 보정 서비스"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand-mark" href="./index.html" aria-label="Supereasy home">
+        <span class="brand-dot"></span>
+        <span class="brand-name">Supereasy</span>
+      </a>
+    </header>
+
+    <main class="page-shell" id="appShell" data-app-state="landing">
+      <section class="intro-panel" aria-labelledby="hero-title">
+        <div class="intro-copy">
+          <h1 id="hero-title">
+            복잡한 보정,<br />
+            <span class="accent-text">1초</span>만에 끝내세요
+          </h1>
+          <p class="intro-description">
+            얼굴의 특징은 유지하고, 과한 보정 느낌은 줄입니다. 사진 한 장만 올리면
+            결과 후보를 빠르게 확인할 수 있습니다.
+          </p>
+        </div>
+      </section>
+
+      <section class="workspace-panel" aria-label="사진 보정">
+        <div class="upload-card" id="workspaceCard" data-state="start">
+          <div class="start-view" id="startView">
+            <label class="drop-zone" id="dropZone" for="fileInput">
+              <input id="fileInput" type="file" accept="image/*" />
+              <img class="preview-image" id="previewImage" alt="업로드한 얼굴 사진 미리보기" hidden />
+              <span class="upload-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" role="img">
+                  <path d="M12 15V4m0 0 4 4m-4-4-4 4" />
+                  <path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3" />
+                </svg>
+              </span>
+              <span class="drop-title">사진 선택하기</span>
+              <span class="drop-copy">또는 이미지를 끌어오세요. JPG, PNG, HEIC 지원</span>
+            </label>
+            <div class="selected-file" id="selectedFile" hidden>
+              <span id="selectedFileName">선택된 사진</span>
+            </div>
+            <div class="action-row selection-actions" id="selectionActions" hidden>
+              <button class="secondary-button" id="resetButton" type="button">다시선택</button>
+              <button class="primary-button" id="enhanceButton" type="button">보정하기</button>
+            </div>
+          </div>
+
+          <div class="processing-view" id="processingView" hidden>
+            <div class="processing-orbit" aria-hidden="true"></div>
+            <p>자연스러운 결과를 만들고 있습니다</p>
+          </div>
+
+          <div class="results-view" id="resultsView" hidden>
+            <div class="version-grid">
+              <figure class="version-card">
+                <span>Version 1</span>
+                <img id="versionOneImage" alt="AI 보정 결과 Version 1" />
+              </figure>
+              <figure class="version-card">
+                <span>Version 2</span>
+                <img id="versionTwoImage" alt="AI 보정 결과 Version 2" />
+              </figure>
+            </div>
+            <div class="action-row">
+              <button class="secondary-button" id="resultResetButton" type="button">다시 선택</button>
+              <a class="primary-button download-link" id="downloadLink" download="supereasy-version-1.png">
+                Version 1 다운로드
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
