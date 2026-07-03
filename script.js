@@ -395,11 +395,14 @@ async function downloadResult(index) {
 
 async function downloadAllResults() {
   try {
+    const uniqueUrls = [...new Set(appData.resultUrls.filter(Boolean))];
     await Promise.all(
-      appData.resultUrls.map((url, index) =>
+      uniqueUrls.map((url, index) =>
         downloadUrl(
           url,
-          `${appData.originalFileName}-version-${index + 1}${getUrlExtension(url)}`,
+          uniqueUrls.length === 1
+            ? `${appData.originalFileName}${getUrlExtension(url)}`
+            : `${appData.originalFileName}-version-${index + 1}${getUrlExtension(url)}`,
         ),
       ),
     );

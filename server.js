@@ -955,11 +955,13 @@ function sendRouteError(response, error, fallbackError) {
     "ETIMEDOUT",
     "28P01",
     "3D000",
-    "42P01",
   ]);
-  const publicError = databaseErrorCodes.has(error.code)
-    ? "database_connection_failed"
-    : error.publicError || fallbackError;
+  let publicError = error.publicError || fallbackError;
+  if (databaseErrorCodes.has(error.code)) {
+    publicError = "database_connection_failed";
+  } else if (error.code === "42P01") {
+    publicError = "database_schema_missing";
+  }
 
   response.status(error.statusCode || 500).json({
     error: publicError,
@@ -969,8 +971,24 @@ function sendRouteError(response, error, fallbackError) {
 
 app.get("/api/health", async (_request, response) => {
   try {
-    await query("SELECT 1");
-    response.json({ ok: true, db: "ok" });
+    const result = await query(`
+      SELECT
+        to_regclass('public.users') IS NOT NULL AS users,
+        to_regclass('public.oauth_accounts') IS NOT NULL AS oauth_accounts,
+        to_regclass('public.credit_ledger') IS NOT NULL AS credit_ledger,
+        to_regclass('public.session') IS NOT NULL AS session,
+        to_regclass('public.image_jobs') IS NOT NULL AS image_jobs
+    `);
+    const tables = result.rows[0];
+    const missingTables = Object.entries(tables)
+      .filter(([, exists]) => !exists)
+      .map(([table]) => table);
+
+    response.status(missingTables.length ? 503 : 200).json({
+      ok: missingTables.length === 0,
+      db: missingTables.length ? "schema_missing" : "ok",
+      missingTables,
+    });
   } catch (error) {
     console.error("Health check failed:", error);
     response.status(503).json({ ok: false, db: "error", error: error.code || "db_error" });
