@@ -189,7 +189,8 @@ async function handleGoogleCodeResponse(response) {
     finishPendingLogin(true);
   } catch (error) {
     console.error(error);
-    alert("로그인에 실패했습니다. 잠시 후 다시 시도해주세요.");
+    const detail = error.code ? ` (${error.code})` : "";
+    alert(`로그인에 실패했습니다${detail}. 잠시 후 다시 시도해주세요.`);
     finishPendingLogin(false);
   }
 }
