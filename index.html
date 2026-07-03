@@ -18,9 +18,29 @@
           <span class="brand-name">Supereasy</span>
         </a>
         <div class="auth-controls" id="authControls" data-auth-state="loading">
-          <button class="secondary-button auth-login-button" id="loginButton" type="button">
-            로그인
-          </button>
+          <div class="auth-login-shell" id="authLoginShell">
+            <button
+              class="secondary-button auth-login-button"
+              id="loginButton"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="authProviderMenu"
+            >
+              로그인
+            </button>
+            <div class="auth-provider-menu" id="authProviderMenu" role="menu" hidden>
+              <button class="auth-provider-button" type="button" role="menuitem" data-auth-provider="google">
+                Google
+              </button>
+              <button class="auth-provider-button" type="button" role="menuitem" data-auth-provider="kakao">
+                Kakao
+              </button>
+              <button class="auth-provider-button" type="button" role="menuitem" data-auth-provider="naver">
+                Naver
+              </button>
+            </div>
+          </div>
           <div class="auth-user" id="authUser" hidden>
             <img class="auth-avatar" id="authAvatar" alt="" />
             <span class="auth-name" id="authName"></span>

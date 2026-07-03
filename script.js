@@ -19,12 +19,15 @@ const resetButton = document.querySelector("#resetButton");
 const resultResetButton = document.querySelector("#resultResetButton");
 const downloadLink = document.querySelector("#downloadLink");
 const authControls = document.querySelector("#authControls");
+const authLoginShell = document.querySelector("#authLoginShell");
 const loginButton = document.querySelector("#loginButton");
 const logoutButton = document.querySelector("#logoutButton");
 const authUser = document.querySelector("#authUser");
 const authAvatar = document.querySelector("#authAvatar");
 const authName = document.querySelector("#authName");
 const authCredit = document.querySelector("#authCredit");
+const authProviderMenu = document.querySelector("#authProviderMenu");
+const authProviderButtons = document.querySelectorAll("[data-auth-provider]");
 
 const appData = {
   imageId: "",
@@ -38,20 +41,59 @@ const appData = {
 
 const authData = {
   googleClientId: "",
+  authProviders: {
+    google: false,
+    kakao: false,
+    naver: false,
+  },
   codeClient: null,
   user: null,
   pendingLogin: null,
 };
+const AUTH_PROVIDER_LABELS = Object.freeze({
+  google: "Google",
+  kakao: "Kakao",
+  naver: "Naver",
+});
 const IMAGE_JOB_COST = 1;
 
 function setLoginBusy(isBusy) {
   loginButton.disabled = isBusy;
   loginButton.textContent = isBusy ? "로그인 중" : "로그인";
+  authProviderButtons.forEach((button) => {
+    const provider = button.dataset.authProvider;
+    button.disabled = isBusy || !authData.authProviders[provider];
+  });
 }
 
 function setEnhanceBusy(isBusy) {
   enhanceButton.disabled = isBusy;
   enhanceButton.textContent = isBusy ? "처리 중" : "보정하기";
+}
+
+function hasEnabledAuthProvider() {
+  return Object.values(authData.authProviders).some(Boolean);
+}
+
+function closeAuthProviderMenu() {
+  authProviderMenu.hidden = true;
+  loginButton.setAttribute("aria-expanded", "false");
+}
+
+function openAuthProviderMenu() {
+  if (authData.user) return;
+
+  authProviderMenu.hidden = false;
+  loginButton.setAttribute("aria-expanded", "true");
+}
+
+function toggleAuthProviderMenu() {
+  if (authProviderMenu.hidden) {
+    openAuthProviderMenu();
+    return;
+  }
+
+  closeAuthProviderMenu();
 }
 
 function updateUserCredit(credit) {
@@ -65,10 +107,11 @@ function renderAuthState() {
   const isLoggedIn = Boolean(authData.user);
 
   authControls.dataset.authState = isLoggedIn ? "authenticated" : "guest";
-  loginButton.hidden = isLoggedIn;
+  authLoginShell.hidden = isLoggedIn;
   authUser.hidden = !isLoggedIn;
 
   if (!isLoggedIn) {
+    authAvatar.hidden = true;
     authAvatar.removeAttribute("src");
     authName.textContent = "";
     authCredit.textContent = "";
@@ -76,6 +119,7 @@ function renderAuthState() {
     return;
   }
 
+  closeAuthProviderMenu();
   authAvatar.src = authData.user.picture || "";
   authAvatar.hidden = !authData.user.picture;
   authName.textContent = authData.user.name || authData.user.email || "사용자";
@@ -166,6 +210,9 @@ function createCodeClient() {
 function finishPendingLogin(success) {
   const pendingLogin = authData.pendingLogin;
   authData.pendingLogin = null;
+  if (pendingLogin?.popupMonitor) {
+    window.clearInterval(pendingLogin.popupMonitor);
+  }
   setLoginBusy(false);
   pendingLogin?.resolve(success);
 }
@@ -196,6 +243,128 @@ async function handleGoogleCodeResponse(response) {
   }
 }
 
+function getLoginReturnTo() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}` || "/";
+}
+
+function shouldUseRedirectLogin() {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function buildSocialLoginUrl(provider, mode) {
+  const url = new URL(`/api/auth/${provider}/start`, window.location.origin);
+  url.searchParams.set("returnTo", getLoginReturnTo());
+  url.searchParams.set("mode", mode);
+  return url.toString();
+}
+
+async function beginGoogleLogin() {
+  if (authData.user) return true;
+
+  if (!authData.authProviders.google || !authData.googleClientId) {
+    alert("Google 로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.");
+    return false;
+  }
+
+  try {
+    if (!authData.codeClient) {
+      await waitForGoogleIdentity();
+      createCodeClient();
+    }
+  } catch (error) {
+    console.error(error);
+    alert("Google Identity Services를 불러오지 못했습니다. 잠시 후 다시 시도해주세요.");
+    return false;
+  }
+
+  if (authData.pendingLogin) return authData.pendingLogin.promise;
+
+  const promise = new Promise((resolve) => {
+    authData.pendingLogin = { resolve };
+  });
+
+  closeAuthProviderMenu();
+  setLoginBusy(true);
+  try {
+    authData.codeClient.requestCode();
+  } catch (error) {
+    console.error(error);
+    finishPendingLogin(false);
+  }
+
+  return promise;
+}
+
+function beginSocialLogin(provider) {
+  if (authData.user) return true;
+
+  const providerLabel = AUTH_PROVIDER_LABELS[provider] || "소셜";
+  if (!authData.authProviders[provider]) {
+    alert(`${providerLabel} 로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.`);
+    return false;
+  }
+
+  if (authData.pendingLogin) return authData.pendingLogin.promise;
+
+  closeAuthProviderMenu();
+
+  if (shouldUseRedirectLogin()) {
+    window.location.href = buildSocialLoginUrl(provider, "redirect");
+    return false;
+  }
+
+  const promise = new Promise((resolve) => {
+    authData.pendingLogin = { resolve };
+  });
+  setLoginBusy(true);
+
+  const popup = window.open(
+    buildSocialLoginUrl(provider, "popup"),
+    "supereasy-oauth",
+    "width=480,height=720",
+  );
+
+  if (!popup) {
+    finishPendingLogin(false);
+    window.location.href = buildSocialLoginUrl(provider, "redirect");
+    return false;
+  }
+
+  if (authData.pendingLogin) {
+    authData.pendingLogin.popup = popup;
+    authData.pendingLogin.popupMonitor = window.setInterval(() => {
+      if (popup.closed) {
+        finishPendingLogin(false);
+      }
+    }, 500);
+  }
+  popup.focus?.();
+
+  return promise;
+}
+
+function beginProviderLogin(provider) {
+  if (provider === "google") return beginGoogleLogin();
+  if (provider === "kakao" || provider === "naver") return beginSocialLogin(provider);
+  return false;
+}
+
+function handleOAuthMessage(event) {
+  if (event.origin !== window.location.origin) return;
+  if (event.data?.type !== "supereasy:oauth-complete") return;
+
+  if (event.data.authenticated && event.data.user) {
+    authData.user = event.data.user;
+    renderAuthState();
+    finishPendingLogin(true);
+    return;
+  }
+
+  const detail = event.data?.error ? ` (${event.data.error})` : "";
+  alert(`로그인에 실패했습니다${detail}. 잠시 후 다시 시도해주세요.`);
+  finishPendingLogin(false);
+}
+
 async function initAuth() {
   try {
     const [config, me] = await Promise.all([
@@ -204,10 +373,15 @@ async function initAuth() {
     ]);
 
     authData.googleClientId = config.googleClientId || "";
+    authData.authProviders = {
+      google: Boolean(config.authProviders?.google && config.googleClientId),
+      kakao: Boolean(config.authProviders?.kakao),
+      naver: Boolean(config.authProviders?.naver),
+    };
     authData.user = me.user;
     renderAuthState();
 
-    if (authData.googleClientId) {
+    if (authData.authProviders.google) {
       await waitForGoogleIdentity();
       createCodeClient();
     }
@@ -221,31 +395,14 @@ async function initAuth() {
 async function ensureAuthenticated() {
   if (authData.user) return true;
 
-  if (!authData.googleClientId) {
-    alert("Google 로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.");
+  if (!hasEnabledAuthProvider()) {
+    alert("로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.");
     return false;
   }
 
-  if (!authData.codeClient) {
-    await waitForGoogleIdentity();
-    createCodeClient();
-  }
-
-  if (authData.pendingLogin) return authData.pendingLogin.promise;
-
-  const promise = new Promise((resolve) => {
-    authData.pendingLogin = { resolve };
-  });
-
-  setLoginBusy(true);
-  try {
-    authData.codeClient.requestCode();
-  } catch (error) {
-    console.error(error);
-    finishPendingLogin(false);
-  }
-
-  return promise;
+  openAuthProviderMenu();
+  loginButton.focus();
+  return false;
 }
 
 async function logout() {
@@ -553,9 +710,32 @@ resetButton.addEventListener("click", resetExperience);
 resultResetButton.addEventListener("click", resetExperience);
 downloadLink.addEventListener("click", downloadAllResults);
 loginButton.addEventListener("click", () => {
-  ensureAuthenticated();
+  if (hasEnabledAuthProvider()) {
+    toggleAuthProviderMenu();
+    return;
+  }
+
+  alert("로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.");
 });
 logoutButton.addEventListener("click", logout);
+window.addEventListener("message", handleOAuthMessage);
+
+authProviderButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    beginProviderLogin(button.dataset.authProvider);
+  });
+});
+
+document.addEventListener("click", (event) => {
+  if (authLoginShell.hidden || authLoginShell.contains(event.target)) return;
+  closeAuthProviderMenu();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    closeAuthProviderMenu();
+  }
+});
 
 imageDownloadButtons.forEach((button) => {
   button.addEventListener("click", () => {

@@ -61,18 +61,40 @@ SESSION_SECRET=
 ADMIN_EMAILS=your-email@example.com
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+APP_ORIGIN=https://ai-refine-tool.vercel.app
+LOCAL_APP_ORIGIN=http://localhost:3000
+KAKAO_REST_API_KEY=
+KAKAO_CLIENT_SECRET=
+NAVER_CLIENT_ID=
+NAVER_CLIENT_SECRET=
 MAX_UPLOAD_BYTES=12582912
 NODE_ENV=production
 ```
 
-3. Google OAuth 설정에 Vercel production URL을 등록한다.
+3. OAuth 설정에 URL을 등록한다. Provider 콘솔의 URL은 환경 변수 origin과 1글자라도 다르면 실패한다.
 
 ```txt
-Authorized JavaScript origins:
+Google Authorized JavaScript origins:
 https://your-project.vercel.app
 
-Authorized redirect URIs:
+Google Authorized redirect URIs:
 https://your-project.vercel.app
+
+Kakao Redirect URI:
+https://your-project.vercel.app/api/auth/kakao/callback
+
+Naver Callback URL:
+https://your-project.vercel.app/api/auth/naver/callback
+```
+
+로컬 테스트용 callback URL은 다음 값을 등록한다.
+
+```txt
+Kakao Redirect URI:
+http://localhost:3000/api/auth/kakao/callback
+
+Naver Callback URL:
+http://localhost:3000/api/auth/naver/callback
 ```
 
 4. 배포 후 확인한다.

@@ -84,7 +84,7 @@ AI API: 결제/작업 파이프라인 안정화 후 마지막에 연결
 - 따라서 안전한 순서는 `파일 임시 저장 -> DB transaction -> mock 처리 -> 완료 상태 저장`이다.
 - DB transaction 이후 mock 처리 실패 시 반드시 `fail` 처리와 refund를 호출한다.
 
-### Phase 2. Job Status APIs
+### Phase 2. Job Status APIs - 현재
 
 목표:
 프론트가 job 결과를 서버 상태 기준으로 보여주게 만든다.
