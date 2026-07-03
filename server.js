@@ -20,6 +20,12 @@ const port = Number(process.env.PORT || 3000);
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
 const sessionSecret = process.env.SESSION_SECRET || "supereasy-dev-session-secret";
+const adminEmails = new Set(
+  (process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+);
 const oauthClient = new OAuth2Client(googleClientId);
 const PgSession = connectPgSimple(session);
 const cookieMaxAge = 1000 * 60 * 60 * 24 * 14;
@@ -237,6 +243,25 @@ async function getUserWithCredit(userId) {
   );
 
   return mapUser(result.rows[0]);
+}
+
+async function getUserEmailNormalized(userId) {
+  const result = await query("SELECT email_normalized FROM users WHERE id = $1", [userId]);
+  return result.rows[0]?.email_normalized || "";
+}
+
+async function requireAdminUser(request, response, next) {
+  try {
+    const emailNormalized = await getUserEmailNormalized(request.session.userId);
+    if (emailNormalized && adminEmails.has(emailNormalized)) {
+      next();
+      return;
+    }
+
+    response.status(403).json({ error: "forbidden" });
+  } catch (error) {
+    sendRouteError(response, error, "admin_check_failed");
+  }
 }
 
 function requireAuthenticated(request, response, next) {
@@ -503,6 +528,33 @@ async function grantSignupCredit(client, { userId, provider, providerAccountId }
     reason: "signup_credit",
     idempotencyKey: `signup:user:${userId}`,
     metadata: { provider, providerAccountId },
+  });
+}
+
+async function grantAdminCredit({ userId, amount, requestId }) {
+  const creditAmount = Number(amount);
+  if (!Number.isInteger(creditAmount) || creditAmount <= 0 || creditAmount > 1000) {
+    throw createHttpError("amount must be an integer between 1 and 1000.", 400, "invalid_credit_amount");
+  }
+
+  const grantRequestId =
+    typeof requestId === "string" && requestId.trim() ? requestId.trim().slice(0, 200) : randomUUID();
+
+  return withTransaction(async (client) => {
+    await lockUserForCreditChange(client, userId);
+    await insertCreditLedger(client, {
+      userId,
+      amount: creditAmount,
+      reason: "admin_credit_grant",
+      idempotencyKey: `admin_credit:${userId}:${grantRequestId}`,
+      metadata: {
+        requestId: grantRequestId,
+      },
+    });
+
+    return {
+      credit: await getCreditBalance(client, userId),
+    };
   });
 }
 
@@ -1065,6 +1117,25 @@ app.post("/api/logout", async (request, response) => {
     sendRouteError(response, error, "logout_failed");
   }
 });
+
+app.post(
+  "/api/admin/credits/grant",
+  requireAuthenticated,
+  requireAdminUser,
+  async (request, response) => {
+    try {
+      const result = await grantAdminCredit({
+        userId: request.session.userId,
+        amount: request.body?.amount,
+        requestId: request.body?.requestId,
+      });
+
+      response.json(result);
+    } catch (error) {
+      sendRouteError(response, error, "admin_credit_grant_failed");
+    }
+  },
+);
 
 app.post(
   "/api/image-jobs",

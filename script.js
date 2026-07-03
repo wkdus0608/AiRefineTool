@@ -42,6 +42,7 @@ const authData = {
   user: null,
   pendingLogin: null,
 };
+const IMAGE_JOB_COST = 1;
 
 function setLoginBusy(isBusy) {
   loginButton.disabled = isBusy;
@@ -488,6 +489,11 @@ async function handleEnhanceRequest() {
 
   const isAuthenticated = await ensureAuthenticated();
   if (!isAuthenticated) return;
+
+  if (Number(authData.user?.credit || 0) < IMAGE_JOB_COST) {
+    alert("남은 크레딧이 없습니다.");
+    return;
+  }
 
   appData.isProcessing = true;
   setEnhanceBusy(true);

@@ -58,6 +58,7 @@ SUPABASE_SERVICE_ROLE_KEY=
 SUPABASE_IMAGE_BUCKET=image-job-temp
 SUPABASE_SIGNED_URL_EXPIRES_IN=900
 SESSION_SECRET=
+ADMIN_EMAILS=your-email@example.com
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 MAX_UPLOAD_BYTES=12582912
@@ -89,3 +90,24 @@ GET /api/health
 ### Image storage policy
 
 원본과 결과 이미지는 Supabase Storage private bucket에 임시 object로 저장한다. 프론트에는 signed URL만 내려준다. 사용자가 다운로드하거나 다시 선택/홈 복귀하면 cleanup API가 Storage object를 삭제하고 DB의 storage path를 비운다.
+
+### Admin credit grant
+
+테스트용 어드민 계정은 Vercel env에 등록한다.
+
+```txt
+ADMIN_EMAILS=your-email@example.com
+```
+
+로그인한 어드민은 브라우저 콘솔에서 자기 계정에 크레딧을 수동 지급할 수 있다.
+
+```js
+await fetch("/api/admin/credits/grant", {
+  method: "POST",
+  credentials: "same-origin",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ amount: 20, requestId: crypto.randomUUID() }),
+}).then((response) => response.json());
+```
+
+지급 내역은 `credit_ledger`에 `admin_credit_grant` reason으로 남는다.
