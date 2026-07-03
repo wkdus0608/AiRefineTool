@@ -58,9 +58,17 @@ a {
   backdrop-filter: blur(16px);
 }
 
-.site-header .brand-mark {
+.header-inner {
+  display: flex;
   width: min(1180px, calc(100vw - 48px));
-  padding: 20px 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 0;
+}
+
+.site-header .brand-mark {
+  flex: 0 0 auto;
 }
 
 .brand-mark {
@@ -86,6 +94,66 @@ a {
   border-radius: 9999px;
   background: var(--main);
   box-shadow: var(--button-shadow);
+}
+
+.auth-controls {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.auth-user {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-avatar {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: var(--surface-soft);
+  object-fit: cover;
+}
+
+.auth-name {
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--charcoal);
+  font-size: 14px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-credit {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border: 1px solid rgba(237, 0, 140, 0.22);
+  border-radius: 9999px;
+  background: rgba(237, 0, 140, 0.06);
+  color: var(--main);
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.auth-login-button,
+.auth-logout-button {
+  min-height: 36px;
+  padding: 7px 14px;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.auth-login-button:disabled {
+  cursor: progress;
+  opacity: 0.68;
 }
 
 .page-shell {
@@ -364,13 +432,82 @@ h1 {
   margin: 0;
 }
 
-.version-card span {
+.version-heading {
+  display: flex;
+  align-items: center;
+}
+
+.version-heading span {
   color: var(--charcoal-muted);
   font-size: 14px;
   line-height: 1.5;
 }
 
-.version-card img {
+.original-toggle,
+.image-download-button {
+  position: absolute;
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.original-toggle {
+  right: 14px;
+  bottom: 14px;
+}
+
+.image-download-button {
+  top: 14px;
+  right: 14px;
+}
+
+.original-toggle img {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+
+.image-download-button svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: var(--charcoal);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+  pointer-events: none;
+}
+
+.original-toggle:hover,
+.original-toggle:focus-visible,
+.image-download-button:hover,
+.image-download-button:focus-visible {
+  opacity: 0.72;
+  outline: none;
+}
+
+.original-toggle:active,
+.original-toggle.is-pressed,
+.image-download-button:active {
+  transform: scale(0.94);
+}
+
+.version-image-wrap {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+}
+
+.version-image-wrap > img {
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -426,6 +563,14 @@ h1 {
 .secondary-button:active {
   opacity: 0.82;
   transform: translateY(1px);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  box-shadow: none;
+  transform: none;
 }
 
 .page-shell[data-app-state="processing"],
@@ -520,15 +665,35 @@ h1 {
 }
 
 @media (max-width: 640px) {
-  .site-header .brand-mark,
+  .header-inner,
   .page-shell,
   .page-shell[data-app-state="processing"],
   .page-shell[data-app-state="results"] {
     width: min(100% - 32px, 760px);
   }
 
-  .site-header .brand-mark {
-    padding: 18px 0;
+  .header-inner {
+    gap: 12px;
+    padding: 12px 0;
+  }
+
+  .brand-mark {
+    gap: 8px;
+  }
+
+  .auth-name {
+    max-width: 92px;
+  }
+
+  .auth-credit {
+    padding: 5px 8px;
+    font-size: 12px;
+  }
+
+  .auth-login-button,
+  .auth-logout-button {
+    min-height: 34px;
+    padding: 7px 12px;
   }
 
   .page-shell,
