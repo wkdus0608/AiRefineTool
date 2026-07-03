@@ -949,8 +949,20 @@ async function cleanupImageJobFiles({ userId, imageJobId }) {
 
 function sendRouteError(response, error, fallbackError) {
   console.error(error);
+  const databaseErrorCodes = new Set([
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "ETIMEDOUT",
+    "28P01",
+    "3D000",
+    "42P01",
+  ]);
+  const publicError = databaseErrorCodes.has(error.code)
+    ? "database_connection_failed"
+    : error.publicError || fallbackError;
+
   response.status(error.statusCode || 500).json({
-    error: error.publicError || fallbackError,
+    error: publicError,
     message: error.message,
   });
 }
@@ -961,7 +973,7 @@ app.get("/api/health", async (_request, response) => {
     response.json({ ok: true, db: "ok" });
   } catch (error) {
     console.error("Health check failed:", error);
-    response.status(503).json({ ok: false, db: "error" });
+    response.status(503).json({ ok: false, db: "error", error: error.code || "db_error" });
   }
 });
 
