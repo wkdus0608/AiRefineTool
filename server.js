@@ -6,6 +6,7 @@ import { OAuth2Client } from "google-auth-library";
 import multer from "multer";
 import { fileTypeFromBuffer } from "file-type";
 import heicConvert from "heic-convert";
+import sharp from "sharp";
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -17,6 +18,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
+const isProduction = process.env.NODE_ENV === "production";
 const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET || "";
 const productionAppOrigin = process.env.APP_ORIGIN || "";
@@ -40,8 +42,17 @@ const supabaseUrl = process.env.SUPABASE_URL || "";
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const supabaseImageBucket = process.env.SUPABASE_IMAGE_BUCKET || "image-job-temp";
 const signedUrlExpiresIn = Number(process.env.SUPABASE_SIGNED_URL_EXPIRES_IN || 60 * 15);
+const storageProviderName = (process.env.STORAGE_PROVIDER || "supabase").trim().toLowerCase();
+const aiProviderName = (process.env.AI_PROVIDER || "mock").trim().toLowerCase();
+const serveStatic = process.env.SERVE_STATIC !== "false";
+const maiEndpoint = (process.env.MAI_ENDPOINT || "").trim().replace(/\/+$/, "");
+const maiApiKey = process.env.MAI_API_KEY || "";
+const maiDeploymentName = process.env.MAI_DEPLOYMENT_NAME || "";
+const aiRequestTimeoutMs = Number(process.env.AI_REQUEST_TIMEOUT_MS || 120000);
+const mockAiForceFailure = process.env.MOCK_AI_FORCE_FAILURE === "true";
 const SIGNUP_FREE_CREDITS = 2;
 const IMAGE_JOB_COST = 1;
+const MAI_MAX_TOTAL_PIXELS = 1024 * 1024;
 const HEIC_CONVERSION_ERROR_MESSAGE =
   "HEIC 파일 변환에 실패했습니다. JPG로 변환 후 다시 업로드해주세요.";
 const ALLOWED_IMAGE_MIME_TYPES = new Set([
@@ -51,11 +62,23 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   "image/heic",
   "image/heif",
 ]);
-const IMAGE_EXTENSION_BY_MIME_TYPE = Object.freeze({
+const RESULT_IMAGE_EXTENSION_BY_MIME_TYPE = Object.freeze({
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
 });
+const IMAGE_RESULT_VARIANTS = Object.freeze([
+  {
+    key: "version-1",
+    promptKey: "AI_PROMPT_A",
+    prompt: process.env.AI_PROMPT_A || "",
+  },
+  {
+    key: "version-2",
+    promptKey: "AI_PROMPT_B",
+    prompt: process.env.AI_PROMPT_B || "",
+  },
+]);
 const IMAGE_JOB_STATUS = Object.freeze({
   queued: "queued",
   processing: "processing",
@@ -92,19 +115,28 @@ const upload = multer({
   },
 });
 
-if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
+if (isProduction && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production.");
 }
 
 if (
-  process.env.NODE_ENV === "production" &&
+  isProduction &&
+  storageProviderName === "supabase" &&
   (!supabaseUrl || !supabaseServiceRoleKey || !supabaseImageBucket)
 ) {
   throw new Error("Supabase storage environment variables are required in production.");
 }
 
+if (!["supabase", "r2"].includes(storageProviderName)) {
+  throw new Error(`Unsupported STORAGE_PROVIDER: ${storageProviderName}`);
+}
+
+if (!["mock", "mai", "gemini", "openai"].includes(aiProviderName)) {
+  throw new Error(`Unsupported AI_PROVIDER: ${aiProviderName}`);
+}
+
 if (
-  process.env.NODE_ENV === "production" &&
+  isProduction &&
   (kakaoRestApiKey || naverClientId || naverClientSecret) &&
   !productionAppOrigin
 ) {
@@ -127,7 +159,7 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: isProduction,
       maxAge: cookieMaxAge,
     },
   }),
@@ -148,8 +180,7 @@ function normalizeOrigin(origin) {
 }
 
 function getConfiguredAppOrigin(request) {
-  const configuredOrigin =
-    process.env.NODE_ENV === "production" ? productionAppOrigin : localAppOrigin;
+  const configuredOrigin = isProduction ? productionAppOrigin : localAppOrigin;
   return normalizeOrigin(configuredOrigin) || getRequestOrigin(request);
 }
 
@@ -217,13 +248,31 @@ function normalizeEmail(email) {
 function requireSameOriginAjax(request, response) {
   const requestedWith = request.get("X-Requested-With");
   const origin = request.get("Origin");
+  const allowedOrigins = new Set(
+    [getRequestOrigin(request), getConfiguredAppOrigin(request), normalizeOrigin(localAppOrigin)]
+      .map(normalizeOrigin)
+      .filter(Boolean),
+  );
 
-  if (requestedWith === "XmlHttpRequest" && (!origin || origin === getRequestOrigin(request))) {
+  if (requestedWith === "XmlHttpRequest" && (!origin || allowedOrigins.has(normalizeOrigin(origin)))) {
     return true;
   }
 
   response.status(403).json({ error: "invalid_request_source" });
   return false;
+}
+
+function getGoogleCodeRedirectUri(request) {
+  const origin = normalizeOrigin(request.get("Origin"));
+  const allowedOrigins = new Set(
+    [getRequestOrigin(request), getConfiguredAppOrigin(request), normalizeOrigin(localAppOrigin)]
+      .map(normalizeOrigin)
+      .filter(Boolean),
+  );
+
+  if (origin && allowedOrigins.has(origin)) return origin;
+
+  return getConfiguredAppOrigin(request);
 }
 
 function saveSession(request) {
@@ -266,7 +315,22 @@ function mapUser(row) {
   };
 }
 
-function mapImageJob(row) {
+function mapImageJobResultVariant(row) {
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    key: row.variant_key,
+    imageUrl: row.signed_result_image_url || row.result_image_url || null,
+    provider: row.provider,
+    promptKey: row.prompt_key,
+    status: row.status,
+    createdAt: row.created_at,
+    completedAt: row.completed_at || null,
+  };
+}
+
+function mapImageJob(row, results = []) {
   if (!row) return null;
 
   return {
@@ -279,6 +343,7 @@ function mapImageJob(row) {
     startedAt: row.started_at || null,
     completedAt: row.completed_at || null,
     errorMessage: row.error_message || null,
+    results,
   };
 }
 
@@ -297,11 +362,58 @@ async function addSignedUrlsToImageJob(row) {
   };
 }
 
+async function addSignedUrlsToImageJobResults(rows) {
+  return Promise.all(
+    rows.map(async (row) => ({
+      ...row,
+      signed_result_image_url: await createSignedImageUrl(row.result_storage_path),
+    })),
+  );
+}
+
+async function getImageJobResultRows(imageJobId, client = { query }) {
+  if (!imageJobId) return [];
+
+  const result = await client.query(
+    `
+      SELECT
+        id,
+        image_job_id,
+        variant_key,
+        prompt_key,
+        result_image_url,
+        result_storage_path,
+        result_mime_type,
+        provider,
+        status,
+        metadata,
+        created_at,
+        updated_at,
+        completed_at
+      FROM image_job_results
+      WHERE image_job_id = $1
+      ORDER BY variant_key, created_at
+    `,
+    [imageJobId],
+  );
+
+  return result.rows;
+}
+
 async function mapImageJobResult(result) {
   const { job, ...rest } = result;
+  const resultRows = result.results || (job?.id ? await getImageJobResultRows(job.id) : []);
+  const [signedJob, signedResultRows] = await Promise.all([
+    addSignedUrlsToImageJob(job),
+    addSignedUrlsToImageJobResults(resultRows),
+  ]);
+
   return {
     ...rest,
-    job: mapImageJob(await addSignedUrlsToImageJob(job)),
+    job: mapImageJob(
+      signedJob,
+      signedResultRows.map(mapImageJobResultVariant).filter(Boolean),
+    ),
   };
 }
 
@@ -406,6 +518,7 @@ function createUploadMiddleware(request, response, next) {
 }
 
 let supabaseClient = null;
+let storageAdapter = null;
 
 function getSupabaseClient() {
   if (!supabaseUrl || !supabaseServiceRoleKey) {
@@ -424,35 +537,86 @@ function getSupabaseClient() {
   return supabaseClient;
 }
 
-function getImageBucket() {
-  return getSupabaseClient().storage.from(supabaseImageBucket);
-}
-
 function buildStoragePath(kind, userId, extension) {
   return `${kind}/${userId}/${randomUUID()}.${extension}`;
 }
 
-async function uploadStorageObject(pathname, buffer, contentType) {
-  const { error } = await getImageBucket().upload(pathname, buffer, {
-    contentType,
-    upsert: false,
-  });
-
-  if (error) {
-    throw createHttpError(error.message, 500, "storage_upload_failed");
+function createSupabaseStorageAdapter() {
+  function getImageBucket() {
+    return getSupabaseClient().storage.from(supabaseImageBucket);
   }
+
+  return {
+    async uploadObject(pathname, buffer, contentType) {
+      const { error } = await getImageBucket().upload(pathname, buffer, {
+        contentType,
+        upsert: false,
+      });
+
+      if (error) {
+        throw createHttpError(error.message, 500, "storage_upload_failed");
+      }
+    },
+
+    async removeObjects(paths) {
+      const uniquePaths = [...new Set(paths.filter(Boolean))];
+      if (!uniquePaths.length) return 0;
+
+      const { error } = await getImageBucket().remove(uniquePaths);
+      if (error) {
+        throw createHttpError(error.message, 500, "storage_cleanup_failed");
+      }
+
+      return uniquePaths.length;
+    },
+
+    async createSignedUrl(storagePath) {
+      if (!storagePath) return null;
+
+      const { data, error } = await getImageBucket().createSignedUrl(
+        storagePath,
+        signedUrlExpiresIn,
+        {
+          download: false,
+        },
+      );
+
+      if (error) {
+        throw createHttpError(error.message, 500, "storage_signed_url_failed");
+      }
+
+      return data.signedUrl;
+    },
+  };
+}
+
+function createStorageAdapter() {
+  if (storageProviderName === "supabase") return createSupabaseStorageAdapter();
+
+  throw createHttpError(
+    "R2 storage is not implemented yet. Use STORAGE_PROVIDER=supabase for the MVP.",
+    500,
+    "storage_provider_not_implemented",
+  );
+}
+
+function getStorageAdapter() {
+  if (!storageAdapter) {
+    storageAdapter = createStorageAdapter();
+  }
+
+  return storageAdapter;
+}
+
+async function uploadStorageObject(pathname, buffer, contentType) {
+  return getStorageAdapter().uploadObject(pathname, buffer, contentType);
 }
 
 async function removeStorageObjects(paths) {
   const uniquePaths = [...new Set(paths.filter(Boolean))];
   if (!uniquePaths.length) return 0;
 
-  const { error } = await getImageBucket().remove(uniquePaths);
-  if (error) {
-    throw createHttpError(error.message, 500, "storage_cleanup_failed");
-  }
-
-  return uniquePaths.length;
+  return getStorageAdapter().removeObjects(uniquePaths);
 }
 
 async function safeRemoveStorageObjects(paths) {
@@ -466,20 +630,7 @@ async function safeRemoveStorageObjects(paths) {
 
 async function createSignedImageUrl(storagePath) {
   if (!storagePath) return null;
-
-  const { data, error } = await getImageBucket().createSignedUrl(
-    storagePath,
-    signedUrlExpiresIn,
-    {
-      download: false,
-    },
-  );
-
-  if (error) {
-    throw createHttpError(error.message, 500, "storage_signed_url_failed");
-  }
-
-  return data.signedUrl;
+  return getStorageAdapter().createSignedUrl(storagePath);
 }
 
 async function convertHeicToJpeg(buffer) {
@@ -494,6 +645,69 @@ async function convertHeicToJpeg(buffer) {
     console.error("HEIC conversion failed:", error);
     throw createHttpError(HEIC_CONVERSION_ERROR_MESSAGE, 400, "heic_conversion_failed");
   }
+}
+
+function getImageExtensionForMimeType(mimeType) {
+  const extension = RESULT_IMAGE_EXTENSION_BY_MIME_TYPE[mimeType];
+  if (!extension) {
+    throw createHttpError("지원하지 않는 이미지 형식입니다.", 400, "unsupported_image_type");
+  }
+
+  return extension;
+}
+
+async function normalizeImageForAi(buffer, mimeType) {
+  const outputMimeType = mimeType === "image/png" ? "image/png" : "image/jpeg";
+  const outputFormat = outputMimeType === "image/png" ? "png" : "jpeg";
+  const inputMetadata = await sharp(buffer, { failOn: "none", limitInputPixels: false }).metadata();
+
+  if (!inputMetadata.width || !inputMetadata.height) {
+    throw createHttpError("이미지 크기를 확인할 수 없습니다.", 400, "invalid_image_dimensions");
+  }
+
+  const totalPixels = inputMetadata.width * inputMetadata.height;
+  let pipeline = sharp(buffer, { failOn: "none", limitInputPixels: false }).rotate();
+  let wasResized = false;
+
+  if (totalPixels > MAI_MAX_TOTAL_PIXELS) {
+    const scale = Math.sqrt(MAI_MAX_TOTAL_PIXELS / totalPixels);
+    const width = Math.max(1, Math.floor(inputMetadata.width * scale));
+    const height = Math.max(1, Math.floor(inputMetadata.height * scale));
+    pipeline = pipeline.resize({
+      width,
+      height,
+      fit: "inside",
+      withoutEnlargement: true,
+    });
+    wasResized = true;
+  }
+
+  if (outputFormat === "png") {
+    pipeline = pipeline.png({ compressionLevel: 9 });
+  } else {
+    pipeline = pipeline.jpeg({ quality: 92, mozjpeg: true });
+  }
+
+  const outputBuffer = await pipeline.toBuffer();
+  const outputMetadata = await sharp(outputBuffer, {
+    failOn: "none",
+    limitInputPixels: false,
+  }).metadata();
+
+  return {
+    buffer: outputBuffer,
+    mimeType: outputMimeType,
+    metadata: {
+      inputMimeType: mimeType,
+      outputMimeType,
+      inputWidth: inputMetadata.width,
+      inputHeight: inputMetadata.height,
+      outputWidth: outputMetadata.width || null,
+      outputHeight: outputMetadata.height || null,
+      resizedForMai: wasResized,
+      maxTotalPixels: MAI_MAX_TOTAL_PIXELS,
+    },
+  };
 }
 
 async function prepareUploadedImage(file, userId) {
@@ -516,10 +730,8 @@ async function prepareUploadedImage(file, userId) {
     storedMimeType = "image/jpeg";
   }
 
-  const extension = IMAGE_EXTENSION_BY_MIME_TYPE[storedMimeType];
-  if (!extension) {
-    throw createHttpError("지원하지 않는 이미지 형식입니다.", 400, "unsupported_image_type");
-  }
+  const extension = getImageExtensionForMimeType(storedMimeType);
+  const aiInput = await normalizeImageForAi(imageBuffer, storedMimeType);
 
   const inputStoragePath = buildStoragePath("originals", userId, extension);
   await uploadStorageObject(inputStoragePath, imageBuffer, storedMimeType);
@@ -532,26 +744,178 @@ async function prepareUploadedImage(file, userId) {
     inputMimeType: storedMimeType,
     originalMimeType: detectedMimeType,
     wasConverted: isHeicMimeType(detectedMimeType),
+    aiInputBuffer: aiInput.buffer,
+    aiInputMimeType: aiInput.mimeType,
+    aiInputMetadata: aiInput.metadata,
   };
 }
 
-async function mockProcessImageJob(job, uploadedImage) {
-  const extension = IMAGE_EXTENSION_BY_MIME_TYPE[uploadedImage.inputMimeType] || "jpg";
-  const resultStoragePath = buildStoragePath("results", job.user_id, extension);
-  await uploadStorageObject(resultStoragePath, uploadedImage.buffer, uploadedImage.inputMimeType);
+function requireConfiguredMaiProvider() {
+  if (!maiEndpoint || !maiApiKey || !maiDeploymentName) {
+    throw createHttpError(
+      "MAI_ENDPOINT, MAI_API_KEY, and MAI_DEPLOYMENT_NAME are required.",
+      500,
+      "missing_mai_config",
+    );
+  }
+
+  const missingPrompt = IMAGE_RESULT_VARIANTS.find((variant) => !variant.prompt.trim());
+  if (missingPrompt) {
+    throw createHttpError(
+      `${missingPrompt.promptKey} is required for AI_PROVIDER=mai.`,
+      500,
+      "missing_ai_prompt",
+    );
+  }
+}
+
+function getAiPromptForVariant(variant) {
+  return variant.prompt.trim() || `Mock enhancement ${variant.key}`;
+}
+
+async function processMockImageVariant({ uploadedImage, variant }) {
+  if (mockAiForceFailure) {
+    throw createHttpError("Mock AI failure requested.", 500, "mock_ai_failure");
+  }
 
   return {
-    resultStoragePath,
+    key: variant.key,
+    promptKey: variant.promptKey,
+    prompt: getAiPromptForVariant(variant),
+    provider: "mock",
+    buffer: uploadedImage.buffer,
+    mimeType: uploadedImage.inputMimeType,
     metadata: {
       processor: "mock-copy",
+      variantKey: variant.key,
+      promptKey: variant.promptKey,
       inputStoragePath: uploadedImage.inputStoragePath,
-      resultStoragePath,
       originalMimeType: uploadedImage.originalMimeType,
       storedMimeType: uploadedImage.inputMimeType,
       convertedFromHeic: uploadedImage.wasConverted,
       processedAt: new Date().toISOString(),
     },
   };
+}
+
+async function callMaiImageEdit({ uploadedImage, variant }) {
+  requireConfiguredMaiProvider();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), aiRequestTimeoutMs);
+  const imageExtension = uploadedImage.aiInputMimeType === "image/png" ? "png" : "jpg";
+  const formData = new FormData();
+  formData.set("model", maiDeploymentName);
+  formData.set("prompt", getAiPromptForVariant(variant));
+  formData.set(
+    "image",
+    new Blob([uploadedImage.aiInputBuffer], { type: uploadedImage.aiInputMimeType }),
+    `input.${imageExtension}`,
+  );
+
+  try {
+    const response = await fetch(`${maiEndpoint}/mai/v1/images/edits`, {
+      method: "POST",
+      headers: {
+        "api-key": maiApiKey,
+      },
+      body: formData,
+      signal: controller.signal,
+    });
+
+    const responseText = await response.text();
+    let responseJson = {};
+    try {
+      responseJson = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      responseJson = {};
+    }
+
+    if (!response.ok) {
+      const message =
+        responseJson.error?.message ||
+        responseJson.message ||
+        responseText ||
+        "MAI image edit request failed.";
+      throw createHttpError(message, response.status, "mai_image_edit_failed");
+    }
+
+    const b64Json = responseJson.data?.find((item) => item?.b64_json)?.b64_json;
+    if (!b64Json) {
+      throw createHttpError("MAI response did not include an image.", 502, "mai_response_invalid");
+    }
+
+    return {
+      key: variant.key,
+      promptKey: variant.promptKey,
+      prompt: getAiPromptForVariant(variant),
+      provider: "mai",
+      buffer: Buffer.from(b64Json, "base64"),
+      mimeType: "image/png",
+      metadata: {
+        provider: "mai",
+        endpoint: maiEndpoint,
+        deploymentName: maiDeploymentName,
+        variantKey: variant.key,
+        promptKey: variant.promptKey,
+        inputMimeType: uploadedImage.aiInputMimeType,
+        aiInput: uploadedImage.aiInputMetadata,
+        processedAt: new Date().toISOString(),
+      },
+    };
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw createHttpError("MAI image edit request timed out.", 504, "mai_request_timeout");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function processImageWithProvider({ uploadedImage, variants }) {
+  if (aiProviderName === "mock") {
+    return Promise.all(variants.map((variant) => processMockImageVariant({ uploadedImage, variant })));
+  }
+
+  if (aiProviderName === "mai") {
+    const results = [];
+    for (const variant of variants) {
+      results.push(await callMaiImageEdit({ uploadedImage, variant }));
+    }
+    return results;
+  }
+
+  throw createHttpError(
+    `${aiProviderName} provider is not implemented yet.`,
+    500,
+    "ai_provider_not_implemented",
+  );
+}
+
+async function storeProcessedImageResults({ job, processedResults }) {
+  const storedResults = [];
+
+  for (const result of processedResults) {
+    const extension = getImageExtensionForMimeType(result.mimeType);
+    const resultStoragePath = buildStoragePath("results", job.user_id, extension);
+    await uploadStorageObject(resultStoragePath, result.buffer, result.mimeType);
+    storedResults.push({
+      key: result.key,
+      promptKey: result.promptKey,
+      prompt: result.prompt,
+      provider: result.provider,
+      resultStoragePath,
+      resultMimeType: result.mimeType,
+      metadata: {
+        ...result.metadata,
+        resultStoragePath,
+      },
+    });
+  }
+
+  return storedResults;
 }
 
 async function lockUserForCreditChange(client, userId) {
@@ -652,8 +1016,15 @@ async function exchangeGoogleCode(code, redirectUri) {
     }),
   });
 
-  const tokens = await tokenResponse.json();
+  const tokens = await tokenResponse.json().catch(() => ({}));
   if (!tokenResponse.ok || !tokens.id_token) {
+    console.error("google_token_exchange_failed", {
+      status: tokenResponse.status,
+      error: typeof tokens.error === "string" ? tokens.error : undefined,
+      error_description:
+        typeof tokens.error_description === "string" ? tokens.error_description : undefined,
+    });
+
     const message =
       tokens.error_description || tokens.error || "Unable to exchange Google auth code.";
     const error = new Error(message);
@@ -1235,7 +1606,51 @@ async function createImageJobWithDebit({
   });
 }
 
-async function completeImageJob({ userId, imageJobId, resultStoragePath, resultMetadata = {} }) {
+async function upsertImageJobResults(client, { imageJobId, results }) {
+  for (const result of results) {
+    await client.query(
+      `
+        INSERT INTO image_job_results (
+          image_job_id,
+          variant_key,
+          prompt_key,
+          prompt,
+          provider,
+          status,
+          result_storage_path,
+          result_mime_type,
+          metadata,
+          completed_at
+        )
+        VALUES ($1, $2, $3, $4, $5, 'completed', $6, $7, $8, now())
+        ON CONFLICT (image_job_id, variant_key)
+        DO UPDATE SET
+          prompt_key = EXCLUDED.prompt_key,
+          prompt = EXCLUDED.prompt,
+          provider = EXCLUDED.provider,
+          status = EXCLUDED.status,
+          result_image_url = NULL,
+          result_storage_path = EXCLUDED.result_storage_path,
+          result_mime_type = EXCLUDED.result_mime_type,
+          metadata = EXCLUDED.metadata,
+          updated_at = now(),
+          completed_at = COALESCE(image_job_results.completed_at, now())
+      `,
+      [
+        imageJobId,
+        result.key,
+        result.promptKey,
+        result.prompt,
+        result.provider,
+        result.resultStoragePath,
+        result.resultMimeType,
+        JSON.stringify(result.metadata || {}),
+      ],
+    );
+  }
+}
+
+async function completeImageJob({ userId, imageJobId, results = [], resultMetadata = {} }) {
   if (!imageJobId || typeof imageJobId !== "string") {
     throw createHttpError("imageJobId is required.", 400, "missing_image_job_id");
   }
@@ -1247,6 +1662,7 @@ async function completeImageJob({ userId, imageJobId, resultStoragePath, resultM
     if (job.status === IMAGE_JOB_STATUS.completed) {
       return {
         job,
+        results: await getImageJobResultRows(imageJobId, client),
         credit: await getCreditBalance(client, userId),
         idempotent: true,
       };
@@ -1260,8 +1676,14 @@ async function completeImageJob({ userId, imageJobId, resultStoragePath, resultM
       );
     }
 
-    if (!resultStoragePath || typeof resultStoragePath !== "string") {
+    const primaryResultStoragePath = results[0]?.resultStoragePath || job.result_storage_path;
+
+    if (!primaryResultStoragePath || typeof primaryResultStoragePath !== "string") {
       throw createHttpError("resultStoragePath is required.", 400, "missing_result_storage_path");
+    }
+
+    if (results.length) {
+      await upsertImageJobResults(client, { imageJobId, results });
     }
 
     const updatedJob = await client.query(
@@ -1279,11 +1701,12 @@ async function completeImageJob({ userId, imageJobId, resultStoragePath, resultM
         WHERE id = $1 AND user_id = $2
         RETURNING ${IMAGE_JOB_COLUMNS}
       `,
-      [imageJobId, userId, resultStoragePath, JSON.stringify(resultMetadata)],
+      [imageJobId, userId, primaryResultStoragePath, JSON.stringify(resultMetadata)],
     );
 
     return {
       job: updatedJob.rows[0],
+      results: await getImageJobResultRows(imageJobId, client),
       credit: await getCreditBalance(client, userId),
       idempotent: false,
     };
@@ -1425,30 +1848,56 @@ async function cleanupImageJobFiles({ userId, imageJobId }) {
   }
 
   const job = result.rows[0];
-  const storagePaths = [job.input_storage_path, job.result_storage_path].filter(Boolean);
+  const resultRows = await getImageJobResultRows(job.id);
+  const storagePaths = [
+    job.input_storage_path,
+    job.result_storage_path,
+    ...resultRows.map((row) => row.result_storage_path),
+  ].filter(Boolean);
   const deletedFiles = await removeStorageObjects(storagePaths);
 
-  await query(
-    `
-      UPDATE image_jobs
-      SET
-        input_image_url = NULL,
-        result_image_url = NULL,
-        input_storage_path = NULL,
-        result_storage_path = NULL,
-        updated_at = now(),
-        result_metadata = result_metadata || $3::jsonb
-      WHERE id = $1 AND user_id = $2
-    `,
-    [
-      imageJobId,
-      userId,
-      JSON.stringify({
-        filesCleanedUpAt: new Date().toISOString(),
-        cleanupReason: "mvp_ephemeral_storage",
-      }),
-    ],
-  );
+  await withTransaction(async (client) => {
+    await client.query(
+      `
+        UPDATE image_jobs
+        SET
+          input_image_url = NULL,
+          result_image_url = NULL,
+          input_storage_path = NULL,
+          result_storage_path = NULL,
+          updated_at = now(),
+          result_metadata = result_metadata || $3::jsonb
+        WHERE id = $1 AND user_id = $2
+      `,
+      [
+        imageJobId,
+        userId,
+        JSON.stringify({
+          filesCleanedUpAt: new Date().toISOString(),
+          cleanupReason: "mvp_ephemeral_storage",
+        }),
+      ],
+    );
+
+    await client.query(
+      `
+        UPDATE image_job_results
+        SET
+          result_image_url = NULL,
+          result_storage_path = NULL,
+          updated_at = now(),
+          metadata = metadata || $2::jsonb
+        WHERE image_job_id = $1
+      `,
+      [
+        imageJobId,
+        JSON.stringify({
+          filesCleanedUpAt: new Date().toISOString(),
+          cleanupReason: "mvp_ephemeral_storage",
+        }),
+      ],
+    );
+  });
 
   return {
     ok: true,
@@ -1584,7 +2033,8 @@ app.get("/api/health", async (_request, response) => {
         to_regclass('public.oauth_accounts') IS NOT NULL AS oauth_accounts,
         to_regclass('public.credit_ledger') IS NOT NULL AS credit_ledger,
         to_regclass('public.session') IS NOT NULL AS session,
-        to_regclass('public.image_jobs') IS NOT NULL AS image_jobs
+        to_regclass('public.image_jobs') IS NOT NULL AS image_jobs,
+        to_regclass('public.image_job_results') IS NOT NULL AS image_job_results
     `);
     const tables = result.rows[0];
     const missingTables = Object.entries(tables)
@@ -1644,7 +2094,7 @@ app.post("/api/auth/google", async (request, response) => {
   }
 
   try {
-    const tokens = await exchangeGoogleCode(code, getRequestOrigin(request));
+    const tokens = await exchangeGoogleCode(code, getGoogleCodeRedirectUri(request));
     const ticket = await oauthClient.verifyIdToken({
       idToken: tokens.id_token,
       audience: googleClientId,
@@ -1708,7 +2158,7 @@ app.post(
   createUploadMiddleware,
   async (request, response) => {
     let uploadedImage = null;
-    let resultStoragePath = null;
+    let resultStoragePaths = [];
 
     try {
       uploadedImage = await prepareUploadedImage(request.file, request.session.userId);
@@ -1728,20 +2178,37 @@ app.post(
       }
 
       try {
-        const mockResult = await mockProcessImageJob(debitResult.job, uploadedImage);
-        resultStoragePath = mockResult.resultStoragePath;
+        const processedResults = await processImageWithProvider({
+          uploadedImage,
+          variants: IMAGE_RESULT_VARIANTS,
+        });
+        const storedResults = await storeProcessedImageResults({
+          job: debitResult.job,
+          processedResults,
+        });
+        resultStoragePaths = storedResults.map((result) => result.resultStoragePath);
 
         const completeResult = await completeImageJob({
           userId: request.session.userId,
           imageJobId: debitResult.job.id,
-          resultStoragePath: mockResult.resultStoragePath,
-          resultMetadata: mockResult.metadata,
+          results: storedResults,
+          resultMetadata: {
+            provider: aiProviderName,
+            variantCount: storedResults.length,
+            variants: storedResults.map((result) => ({
+              key: result.key,
+              promptKey: result.promptKey,
+              provider: result.provider,
+              resultStoragePath: result.resultStoragePath,
+            })),
+            processedAt: new Date().toISOString(),
+          },
         });
 
         response.status(201).json(await mapImageJobResult(completeResult));
       } catch (processingError) {
         console.error(processingError);
-        await safeRemoveStorageObjects([resultStoragePath]);
+        await safeRemoveStorageObjects(resultStoragePaths);
 
         const failResult = await failImageJobWithRefund({
           userId: request.session.userId,
@@ -1788,7 +2255,9 @@ app.use((error, _request, response, _next) => {
   sendRouteError(response, error, "server_error");
 });
 
-app.use(express.static(__dirname));
+if (serveStatic) {
+  app.use(express.static(__dirname));
+}
 
 async function startServer() {
   return app.listen(port, () => {

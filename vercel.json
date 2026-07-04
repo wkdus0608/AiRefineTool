@@ -1,8 +1,8 @@
 {
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.js"
+      "source": "/api/:path*",
+      "destination": "https://supereasy-api-CHANGE-ME.a.run.app/api/:path*"
     }
   ]
 }

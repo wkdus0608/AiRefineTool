@@ -18,6 +18,7 @@ const imageDownloadButtons = document.querySelectorAll(".image-download-button")
 const resetButton = document.querySelector("#resetButton");
 const resultResetButton = document.querySelector("#resultResetButton");
 const downloadLink = document.querySelector("#downloadLink");
+const brandMark = document.querySelector(".brand-mark");
 const authControls = document.querySelector("#authControls");
 const authLoginShell = document.querySelector("#authLoginShell");
 const loginButton = document.querySelector("#loginButton");
@@ -56,6 +57,9 @@ const AUTH_PROVIDER_LABELS = Object.freeze({
   naver: "Naver",
 });
 const IMAGE_JOB_COST = 1;
+const RESULT_EXIT_CONFIRM_MESSAGE =
+  "현재 결과 사진은 이 화면을 벗어나면 사라집니다. 정말 나가시겠습니까?";
+let allowResultExit = false;
 
 function setLoginBusy(isBusy) {
   loginButton.disabled = isBusy;
@@ -152,7 +156,7 @@ async function requestJson(url, options = {}) {
 async function requestForm(url, formData, options = {}) {
   const { headers = {}, ...requestOptions } = options;
   const response = await fetch(url, {
-    credentials: "same-origin",
+    credentials: "include",
     headers,
     body: formData,
     ...requestOptions,
@@ -168,6 +172,13 @@ async function requestForm(url, formData, options = {}) {
   }
 
   return data;
+}
+
+async function refreshCurrentUser() {
+  const me = await requestJson("/api/me");
+  authData.user = me.authenticated ? me.user : null;
+  renderAuthState();
+  return authData.user;
 }
 
 function waitForGoogleIdentity() {
@@ -217,6 +228,12 @@ function finishPendingLogin(success) {
   pendingLogin?.resolve(success);
 }
 
+function createSessionPersistenceError() {
+  const error = new Error("로그인 세션이 저장되지 않았습니다.");
+  error.code = "session_not_persisted";
+  return error;
+}
+
 async function handleGoogleCodeResponse(response) {
   if (response.error || !response.code) {
     finishPendingLogin(false);
@@ -232,9 +249,10 @@ async function handleGoogleCodeResponse(response) {
       body: JSON.stringify({ code: response.code }),
     });
 
-    authData.user = data.user;
-    renderAuthState();
-    finishPendingLogin(true);
+    const user = await refreshCurrentUser();
+    if (!user) throw createSessionPersistenceError();
+
+    finishPendingLogin(Boolean(data.user));
   } catch (error) {
     console.error(error);
     const detail = error.code ? ` (${error.code})` : "";
@@ -349,14 +367,22 @@ function beginProviderLogin(provider) {
   return false;
 }
 
-function handleOAuthMessage(event) {
+async function handleOAuthMessage(event) {
   if (event.origin !== window.location.origin) return;
   if (event.data?.type !== "supereasy:oauth-complete") return;
 
   if (event.data.authenticated && event.data.user) {
-    authData.user = event.data.user;
-    renderAuthState();
-    finishPendingLogin(true);
+    try {
+      const user = await refreshCurrentUser();
+      if (!user) throw createSessionPersistenceError();
+
+      finishPendingLogin(true);
+    } catch (error) {
+      console.error(error);
+      const detail = error.code ? ` (${error.code})` : "";
+      alert(`로그인에 실패했습니다${detail}. 잠시 후 다시 시도해주세요.`);
+      finishPendingLogin(false);
+    }
     return;
   }
 
@@ -406,10 +432,15 @@ async function ensureAuthenticated() {
 }
 
 async function logout() {
+  if (!confirmResultExit()) return;
+
   try {
+    allowResultExit = true;
+    await cleanupCurrentImageJobFiles();
     await requestJson("/api/logout", { method: "POST" });
     window.location.reload();
   } catch (error) {
+    allowResultExit = false;
     console.error(error);
     alert("로그아웃에 실패했습니다. 잠시 후 다시 시도해주세요.");
   }
@@ -443,6 +474,26 @@ function revokeStoredUrls() {
   appData.resultUrls = [];
 }
 
+function shouldConfirmResultExit() {
+  return (
+    appShell.dataset.appState === "results" &&
+    Boolean(appData.imageJobId) &&
+    appData.resultUrls.some(Boolean)
+  );
+}
+
+function confirmResultExit() {
+  if (!shouldConfirmResultExit()) return true;
+  return window.confirm(RESULT_EXIT_CONFIRM_MESSAGE);
+}
+
+function handleBeforeUnload(event) {
+  if (allowResultExit || !shouldConfirmResultExit()) return;
+
+  event.preventDefault();
+  event.returnValue = "";
+}
+
 async function cleanupCurrentImageJobFiles() {
   const imageJobId = appData.imageJobId;
   if (!imageJobId) return false;
@@ -459,6 +510,8 @@ async function cleanupCurrentImageJobFiles() {
 }
 
 async function resetExperience() {
+  if (!confirmResultExit()) return;
+
   await cleanupCurrentImageJobFiles();
   revokeStoredUrls();
   appData.imageId = "";
@@ -474,6 +527,17 @@ async function resetExperience() {
   versionTwoImage.removeAttribute("src");
   setEnhanceBusy(false);
   setAppState("landing");
+}
+
+async function goHome(event) {
+  if (!shouldConfirmResultExit()) return;
+
+  event.preventDefault();
+  if (!confirmResultExit()) return;
+
+  allowResultExit = true;
+  await cleanupCurrentImageJobFiles();
+  window.location.href = brandMark.href;
 }
 
 function getBaseName(fileName) {
@@ -581,6 +645,7 @@ async function createImageJobForSelectedFile() {
 
   return requestForm("/api/image-jobs", formData, {
     method: "POST",
+    credentials: "include",
   });
 }
 
@@ -624,18 +689,24 @@ function getUrlExtension(url) {
 }
 
 function renderServerJobResult(job) {
-  if (!job?.resultImageUrl) {
-    throw new Error("Server response did not include resultImageUrl.");
+  const resultUrls = Array.isArray(job?.results)
+    ? job.results.map((result) => result.imageUrl).filter(Boolean)
+    : [];
+  const firstResultUrl = resultUrls[0] || job?.resultImageUrl;
+  const secondResultUrl = resultUrls[1] || firstResultUrl;
+
+  if (!firstResultUrl) {
+    throw new Error("Server response did not include result image URLs.");
   }
 
   const previousOriginalUrl = appData.originalImageUrl;
   appData.imageJobId = job.id || "";
   appData.originalImageUrl = job.inputImageUrl || appData.originalImageUrl;
-  appData.resultUrls = [job.resultImageUrl, job.resultImageUrl];
+  appData.resultUrls = [firstResultUrl, secondResultUrl].filter(Boolean);
 
   previewImage.src = appData.originalImageUrl;
-  versionOneImage.src = job.resultImageUrl;
-  versionTwoImage.src = job.resultImageUrl;
+  versionOneImage.src = firstResultUrl;
+  versionTwoImage.src = secondResultUrl;
   revokeBlobUrl(previousOriginalUrl);
   setAppState("results");
 }
@@ -708,6 +779,7 @@ dropZone.addEventListener("drop", (event) => {
 resetButton.addEventListener("click", resetExperience);
 resultResetButton.addEventListener("click", resetExperience);
 downloadLink.addEventListener("click", downloadAllResults);
+brandMark.addEventListener("click", goHome);
 loginButton.addEventListener("click", () => {
   if (hasEnabledAuthProvider()) {
     toggleAuthProviderMenu();
@@ -717,6 +789,7 @@ loginButton.addEventListener("click", () => {
   alert("로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.");
 });
 logoutButton.addEventListener("click", logout);
+window.addEventListener("beforeunload", handleBeforeUnload);
 window.addEventListener("message", handleOAuthMessage);
 
 authProviderButtons.forEach((button) => {
