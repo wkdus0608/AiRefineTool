@@ -836,24 +836,6 @@ async function updateUserProfileForOAuth(client, user, profile, emailNormalized)
   return updateResult.rows[0];
 }
 
-async function assertNoProviderAccountConflict(client, { userId, provider, providerAccountId }) {
-  const conflictResult = await client.query(
-    `
-      SELECT id
-      FROM oauth_accounts
-      WHERE user_id = $1
-        AND provider = $2
-        AND provider_account_id <> $3
-      LIMIT 1
-    `,
-    [userId, provider, providerAccountId],
-  );
-
-  if (conflictResult.rowCount) {
-    throw createHttpError("Provider account is already linked.", 409, "provider_account_conflict");
-  }
-}
-
 async function insertOAuthAccount(client, { userId, profile }) {
   const insertResult = await client.query(
     `
@@ -938,81 +920,28 @@ async function upsertOAuthUser(profile) {
       return user;
     }
 
-    let userResult = await client.query(
+    const userResult = await client.query(
       `
-        SELECT id, email, email_verified, display_name, avatar_url, email_normalized
-        FROM users
-        WHERE email_normalized = $1
-        FOR UPDATE
+        INSERT INTO users (email, email_normalized, email_verified, display_name, avatar_url)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id, email, email_verified, display_name, avatar_url, email_normalized
       `,
-      [emailNormalized],
+      [
+        profile.email,
+        emailNormalized,
+        Boolean(profile.emailVerified),
+        profile.displayName || profile.email,
+        profile.avatarUrl || null,
+      ],
     );
-
-    let user = userResult.rows[0];
-    let wasCreated = false;
-
-    if (!user) {
-      userResult = await client.query(
-        `
-          INSERT INTO users (email, email_normalized, email_verified, display_name, avatar_url)
-          VALUES ($1, $2, $3, $4, $5)
-          ON CONFLICT (email_normalized) DO NOTHING
-          RETURNING id, email, email_verified, display_name, avatar_url, email_normalized
-        `,
-        [
-          profile.email,
-          emailNormalized,
-          Boolean(profile.emailVerified),
-          profile.displayName || profile.email,
-          profile.avatarUrl || null,
-        ],
-      );
-
-      if (userResult.rowCount) {
-        user = userResult.rows[0];
-        wasCreated = true;
-      } else {
-        const concurrentUserResult = await client.query(
-          `
-            SELECT id, email, email_verified, display_name, avatar_url, email_normalized
-            FROM users
-            WHERE email_normalized = $1
-            FOR UPDATE
-          `,
-          [emailNormalized],
-        );
-        user = concurrentUserResult.rows[0];
-      }
-    }
-
-    if (!user) {
-      throw createHttpError("User could not be created.", 500, "user_upsert_failed");
-    }
-
-    if (!wasCreated) {
-      if (!profile.emailVerified) {
-        throw createHttpError("Verified email is required to link accounts.", 401, "unverified_provider_email");
-      }
-
-      await assertNoProviderAccountConflict(client, {
-        userId: user.id,
-        provider: profile.provider,
-        providerAccountId: profile.providerAccountId,
-      });
-
-      user = await updateUserProfileForOAuth(client, user, profile, emailNormalized);
-      console.info(`linked ${profile.provider} account to existing user by verified email`);
-    }
+    const user = userResult.rows[0];
 
     await insertOAuthAccount(client, { userId: user.id, profile });
-
-    if (wasCreated) {
-      await grantSignupCredit(client, {
-        userId: user.id,
-        provider: profile.provider,
-        providerAccountId: profile.providerAccountId,
-      });
-    }
+    await grantSignupCredit(client, {
+      userId: user.id,
+      provider: profile.provider,
+      providerAccountId: profile.providerAccountId,
+    });
 
     return user;
   });

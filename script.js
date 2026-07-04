@@ -408,12 +408,11 @@ async function ensureAuthenticated() {
 async function logout() {
   try {
     await requestJson("/api/logout", { method: "POST" });
+    window.location.reload();
   } catch (error) {
     console.error(error);
+    alert("로그아웃에 실패했습니다. 잠시 후 다시 시도해주세요.");
   }
-
-  authData.user = null;
-  renderAuthState();
 }
 
 function setAppState(state) {
