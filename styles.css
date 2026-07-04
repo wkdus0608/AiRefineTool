@@ -286,6 +286,7 @@ h1 {
 }
 
 .start-view,
+.login-view,
 .processing-view,
 .results-view {
   min-height: 0;
@@ -298,6 +299,117 @@ h1 {
   flex-direction: column;
   justify-content: stretch;
   gap: 16px;
+}
+
+.login-view {
+  display: grid;
+  align-content: center;
+  gap: 24px;
+  padding: 22px;
+}
+
+.login-brand {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 10px;
+  justify-self: center;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.login-brand .brand-dot {
+  width: 14px;
+  height: 14px;
+}
+
+.login-options {
+  display: grid;
+  width: min(100%, 360px);
+  gap: 12px;
+  justify-self: center;
+}
+
+.provider-login-button {
+  display: grid;
+  min-height: 52px;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  box-shadow: var(--button-shadow);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  transition:
+    opacity 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.provider-login-button:hover,
+.provider-login-button:focus-visible {
+  box-shadow: var(--focus-shadow);
+  outline: none;
+}
+
+.provider-login-button:active {
+  opacity: 0.86;
+  transform: translateY(1px);
+}
+
+.provider-login-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+  box-shadow: none;
+  transform: none;
+}
+
+.provider-logo {
+  display: inline-grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.provider-google {
+  border-color: #dadce0;
+  background: #ffffff;
+  color: #202124;
+}
+
+.provider-logo-google {
+  background: #ffffff;
+  color: #4285f4;
+}
+
+.provider-naver {
+  background: #03c75a;
+  color: #ffffff;
+}
+
+.provider-logo-naver {
+  background: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.provider-kakao {
+  background: #fee500;
+  color: #000000;
+}
+
+.provider-logo-kakao {
+  background: rgba(0, 0, 0, 0.08);
+  color: #000000;
 }
 
 .panel-kicker {
@@ -622,6 +734,7 @@ h1 {
 }
 
 .page-shell[data-app-state="processing"],
+.page-shell[data-app-state="login"],
 .page-shell[data-app-state="results"] {
   width: min(920px, calc(100vw - 56px));
   grid-template-columns: 0fr minmax(0, 1fr);
@@ -631,6 +744,7 @@ h1 {
 }
 
 .page-shell[data-app-state="processing"] .intro-panel,
+.page-shell[data-app-state="login"] .intro-panel,
 .page-shell[data-app-state="results"] .intro-panel {
   pointer-events: none;
   opacity: 0;
@@ -638,11 +752,13 @@ h1 {
 }
 
 .page-shell[data-app-state="processing"] .workspace-panel,
+.page-shell[data-app-state="login"] .workspace-panel,
 .page-shell[data-app-state="results"] .workspace-panel {
   transform: translate3d(-4%, 0, 0) scale(1.02);
 }
 
 .page-shell[data-app-state="processing"] .upload-card,
+.page-shell[data-app-state="login"] .upload-card,
 .page-shell[data-app-state="results"] .upload-card {
   height: min(620px, calc(100vh - 124px));
   padding: 12px;
@@ -685,6 +801,7 @@ h1 {
 @media (max-width: 920px) {
   .page-shell,
   .page-shell[data-app-state="processing"],
+  .page-shell[data-app-state="login"],
   .page-shell[data-app-state="results"] {
     width: min(100% - 40px, 760px);
     grid-template-columns: 1fr;
@@ -693,16 +810,19 @@ h1 {
   }
 
   .page-shell[data-app-state="processing"],
+  .page-shell[data-app-state="login"],
   .page-shell[data-app-state="results"] {
     padding-top: 78px;
   }
 
   .page-shell[data-app-state="processing"] .intro-panel,
+  .page-shell[data-app-state="login"] .intro-panel,
   .page-shell[data-app-state="results"] .intro-panel {
     display: none;
   }
 
   .page-shell[data-app-state="processing"] .workspace-panel,
+  .page-shell[data-app-state="login"] .workspace-panel,
   .page-shell[data-app-state="results"] .workspace-panel {
     transform: none;
   }
@@ -716,6 +836,7 @@ h1 {
   .header-inner,
   .page-shell,
   .page-shell[data-app-state="processing"],
+  .page-shell[data-app-state="login"],
   .page-shell[data-app-state="results"] {
     width: min(100% - 32px, 760px);
   }
@@ -750,6 +871,7 @@ h1 {
 
   .page-shell,
   .page-shell[data-app-state="processing"],
+  .page-shell[data-app-state="login"],
   .page-shell[data-app-state="results"] {
     padding: 78px 0 24px;
   }
@@ -770,6 +892,7 @@ h1 {
 
   .upload-card,
   .page-shell[data-app-state="processing"] .upload-card,
+  .page-shell[data-app-state="login"] .upload-card,
   .page-shell[data-app-state="results"] .upload-card {
     height: min(560px, calc(100vh - 108px));
     padding: 10px;

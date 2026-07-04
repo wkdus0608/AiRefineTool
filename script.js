@@ -1,6 +1,7 @@
 const appShell = document.querySelector("#appShell");
 const workspaceCard = document.querySelector("#workspaceCard");
 const startView = document.querySelector("#startView");
+const loginView = document.querySelector("#loginView");
 const processingView = document.querySelector("#processingView");
 const resultsView = document.querySelector("#resultsView");
 const fileInput = document.querySelector("#fileInput");
@@ -82,6 +83,13 @@ function hasEnabledAuthProvider() {
 function closeAuthProviderMenu() {
   authProviderMenu.hidden = true;
   loginButton.setAttribute("aria-expanded", "false");
+}
+
+function showLoginPage() {
+  if (authData.user) return;
+
+  closeAuthProviderMenu();
+  setAppState("login");
 }
 
 function openAuthProviderMenu() {
@@ -178,6 +186,9 @@ async function refreshCurrentUser() {
   const me = await requestJson("/api/me");
   authData.user = me.authenticated ? me.user : null;
   renderAuthState();
+  if (authData.user && appShell.dataset.appState === "login") {
+    setAppState("landing");
+  }
   return authData.user;
 }
 
@@ -451,6 +462,7 @@ function setAppState(state) {
   workspaceCard.dataset.state = state;
 
   startView.hidden = state !== "landing" && state !== "selected";
+  loginView.hidden = state !== "login";
   processingView.hidden = state !== "processing";
   resultsView.hidden = state !== "results";
   previewImage.hidden = state !== "selected";
@@ -545,6 +557,11 @@ function getBaseName(fileName) {
 }
 
 async function selectImage(file) {
+  if (!authData.user) {
+    showLoginPage();
+    return;
+  }
+
   await cleanupCurrentImageJobFiles();
   revokeStoredUrls();
 
@@ -744,6 +761,12 @@ async function handleEnhanceRequest() {
 }
 
 async function handleFile(file) {
+  if (!authData.user) {
+    fileInput.value = "";
+    showLoginPage();
+    return;
+  }
+
   const hasImageMimeType = file?.type?.startsWith("image/");
   const hasSupportedImageExtension = /\.(jpe?g|png|webp|heic|heif)$/i.test(file?.name || "");
 
@@ -755,7 +778,19 @@ async function handleFile(file) {
   await selectImage(file);
 }
 
+function handleUnauthenticatedImagePick(event) {
+  if (authData.user) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  fileInput.value = "";
+  showLoginPage();
+}
+
 enhanceButton.addEventListener("click", handleEnhanceRequest);
+
+dropZone.addEventListener("click", handleUnauthenticatedImagePick, true);
+fileInput.addEventListener("click", handleUnauthenticatedImagePick);
 
 fileInput.addEventListener("change", (event) => {
   handleFile(event.target.files[0]);
@@ -763,6 +798,11 @@ fileInput.addEventListener("change", (event) => {
 
 dropZone.addEventListener("dragover", (event) => {
   event.preventDefault();
+  if (!authData.user) {
+    showLoginPage();
+    return;
+  }
+
   dropZone.classList.add("is-dragging");
 });
 
@@ -773,6 +813,11 @@ dropZone.addEventListener("dragleave", () => {
 dropZone.addEventListener("drop", (event) => {
   event.preventDefault();
   dropZone.classList.remove("is-dragging");
+  if (!authData.user) {
+    showLoginPage();
+    return;
+  }
+
   handleFile(event.dataTransfer.files[0]);
 });
 
@@ -781,12 +826,7 @@ resultResetButton.addEventListener("click", resetExperience);
 downloadLink.addEventListener("click", downloadAllResults);
 brandMark.addEventListener("click", goHome);
 loginButton.addEventListener("click", () => {
-  if (hasEnabledAuthProvider()) {
-    toggleAuthProviderMenu();
-    return;
-  }
-
-  alert("로그인 설정이 필요합니다. 서버의 .env 값을 확인해주세요.");
+  showLoginPage();
 });
 logoutButton.addEventListener("click", logout);
 window.addEventListener("beforeunload", handleBeforeUnload);
